@@ -36,9 +36,7 @@ end
 function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
     persistent DV_last u_out_last x_nom_last K_fb Delta_u e_max_last
 
-    % ==== 1. Tube NMPC 参数初始化 ====
     if isempty(K_fb)
-        % 反馈增益矩阵（局部稳定控制律）
         K_fb = [ ...
             11.6162   -0.0000    0.0000   -0.0000   -1.3712   -0.0000;
              0.0000   16.1009    0.0000    1.8758    0.0000    0.0000;
@@ -47,7 +45,6 @@ function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
              0.1902   -0.0000   -0.0000   -0.0000    2.0091    0.0000;
              0.0000   -0.0000   -0.0000   -0.0000   -0.0000   13.9476];
 
-        % 速度误差上界（tube 半径）
         e_max = [0.25; 0.25; 0.2; 0.2; 0.2; 0.2]*4;
 
         % 收缩量 Δu = |K_fb| e_max
@@ -61,7 +58,6 @@ function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
     euler_cur = pose_cur(4:6); % [phi the psi]    
     a_dist   = u(19:24);      
 
-    % ==== 2. 自适应 Tube 半径与紧缩量计算 ====
     e_max_min = [0.25; 0.25; 0.2; 0.2; 0.2; 0.2] * 0.25;
     e_max_max = [0.25; 0.25; 0.2; 0.2; 0.2; 0.2] * 1;
     c_lambda = [0.005; 0.005; 0.003; 0.003; 0.003; 0.003] * 1; 
@@ -79,7 +75,6 @@ function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
 
     Delta_u = abs(K_fb) * e_max_k;
 
-    % ==== 名义状态初始化 ====
     if isempty(x_nom_last)
         x_nom_last = vel_cur;         % 初始名义速度 = 当前真实
         u_out_last = zeros(6,1);      % 记录上一次输出控制
@@ -95,7 +90,6 @@ function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
     vel_err        = vel_des - vel_cur;
     err_vec_scaled = vel_err * 2; 
         
-    % ---- 自适应输出平滑系数 alpha_smooth（目前未真正使用）----
     err_norm = norm(vel_err);
     alpha_max = 0.95;  
     alpha_min = 0.5;   
@@ -103,11 +97,9 @@ function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
     s = min(err_norm / err_ref, 1);   
     alpha_smooth = alpha_max - (alpha_max - alpha_min) * s; %#ok<NASGU>
 
-    % ---- 2. 基准 Q、R (对角线元素) ----
     Q_base_diag = [20 20 40 20 20 40];
     R_base_diag = [1 1 1 2 2 1] * 0.0045/2;
 
-    % ---- 3. 通道独立模糊调整 ----
     alphaQ_vec = zeros(1, 6);
     alphaR_vec = zeros(1, 6);
 
@@ -126,17 +118,13 @@ function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
     Q = diag(alphaQ_vec .* Q_base_diag);
     R = diag(alphaR_vec .* R_base_diag);
 
-    % 原有终端权重
     F = 4 * Q;     
 
-    % ==== 决策变量: 2 段常值力 ====
     n_dec = 6 * cN; 
 
-    % ==== 力约束（收缩 + 物理） ====
     u_phys_min = -1500 * ones(6,1);
     u_phys_max =  1500 * ones(6,1);
 
-    % 名义控制的收缩约束
     umin = u_phys_min + Delta_u;
     umax = u_phys_max - Delta_u;
 
@@ -147,11 +135,9 @@ function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
     lb  = repmat(umin, cN, 1);   
     ub  = repmat(umax, cN, 1);
 
-    % ==== 当前状态 & 期望速度 ====
     x_current = vel_cur;   
     desired_x = vel_des;   
 
-    % ==== 代价函数（加入终端稳定化反馈） ====
     cost_fun = @(DV) costMPC_2segment( ...
         dt, x_current, DV, cN, pN, Q, F, R, desired_x, euler_cur, K_fb);
 
@@ -228,7 +214,6 @@ function [sys, tt_calc_history] = mdlOutputs(t, x, u, fuzzyOn, tt_calc_history)
     sys(13:18) = e_max_k;
 end
 
-%% 代价函数：两段常值力控制 + 终端稳定化反馈
 function cost = costMPC_2segment(dt, x0, DV, cN, pN, Q, F, R, desiredx, euler, K_fb)
 
     if cN ~= 2
@@ -281,29 +266,22 @@ function cost = costMPC_2segment(dt, x0, DV, cN, pN, Q, F, R, desiredx, euler, K
         e((i-1)*12+1 : i*12) = [a; b];
     end
 
-    % 段间平滑：鼓励 u1 ≈ u2
     lambda_du    = 1;    
     du12         = u2 - u1;
     smooth_cost  = lambda_du * (du12.' * du12);
 
-    % ========== 新增：终端稳定化反馈成本 ==========
     xN = x;                      % 预测末端状态
     eN = desiredx - xN;          % 末端误差（按你原来符号）
 
-    % 1) 终端 Lyapunov 权重：可先取 F，再乘一个系数
     lambda_xT = 1.5;             % 终端状态权重系数，可 0.5~5 调整
     P_term    = lambda_xT * F;   % P ≈ F
 
-    % 2) 终端“预反馈”控制 u_fbN = -K_fb * eN
-    %    注意：这里用的是“理论上的局部反馈”，与运行时 tube 反馈方向相反
     u_fbN = -K_fb * eN;
 
-    % 3) 终端控制能量权重
     lambda_uT = 0.5;             % 可在 0.01~0.5 内尝试
     R_fb      = lambda_uT * R;   % 用同一结构的 R 作缩放
 
     J_term = eN.' * P_term * eN + u_fbN.' * R_fb * u_fbN;
 
-    % 总成本
     cost = e' * e + smooth_cost + J_term;
 end
