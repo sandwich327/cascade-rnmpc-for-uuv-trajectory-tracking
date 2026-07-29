@@ -3,11 +3,9 @@ function [sys,x0,str,ts] = disturbance_compensator_Ad(t,x,u,flag,params)
     params.u_min = -1500*ones(6,1); 
     params.u_max =  1500*ones(6,1);
     
-    % 1. 降低姿态通道的最高增益，防止高频震荡
     params.L_base = diag([2.0, 2.0, 2.0, 0.5, 0.5, 0.5]) / 8;  
     params.L_max  = diag([4.0, 4.0, 4.0, 1.5, 1.5, 1.5]);      
     
-    % 2. 独立滤波系数：前三个(力)用0.80保证响应快，后三个(力矩)用0.92强力去噪
     params.gamma  = [0.80; 0.80; 0.80; 0.92; 0.92; 0.92]; 
 
     switch flag
@@ -64,11 +62,9 @@ function sys = mdlOutputs(t,x,u,params)
     M_est = get_M_est();
     dt = params.dt;
     
-    % ================= 1. 解耦且平滑的自适应增益 =================
     norm_v_lin = norm(v_meas(1:3));
     norm_v_ang = norm(v_meas(4:6));
     
-    % 使用平滑函数替代 min/max，c_lin 和 c_ang 是调节平滑度的参数
     c_lin = 0.5; 
     c_ang = 0.2; 
     
@@ -92,7 +88,6 @@ function sys = mdlOutputs(t,x,u,params)
         L_k(i,i) = params.L_base(i,i) + alpha_i * (params.L_max(i,i) - params.L_base(i,i));
      end
      
-    % ================= 2. 观测器核心 =================
     d_hat_raw = d_hat_prev + L_k * M_est * (v_meas - v_prev) ...
                 - dt * L_k * F_nom_prev - dt * L_k * d_hat_prev;
             
@@ -100,13 +95,11 @@ function sys = mdlOutputs(t,x,u,params)
     tau_min = -1000 * ones(6,1);
     d_hat_sat = max(min(d_hat_raw, tau_max), tau_min);
     
-    % ================= 3. 独立通道低通滤波 =================
     tau_out = zeros(6,1);
     for i = 1:6
         tau_out(i) = params.gamma(i) * tau_out_prev(i) + (1 - params.gamma(i)) * d_hat_sat(i);
     end
     
-    % ================= 4. 控制量计算 =================
     u_total = u_mpc - tau_out;
     u_total = max(u_total, params.u_min(:));
     u_total = min(u_total, params.u_max(:));
