@@ -50,27 +50,22 @@ function [sys, t_calc_history] = mdlOutputs(t, x, u, fuzzyOn, t_calc_history)
 
     dt = 0.05;  % 20 Hz
 
-    % % 特殊逻辑：当水平距离较远时，强制调整航向指向目标
     % poserr = u(1:2) - u(7:8);
     % if norm(poserr) > 5
     %     heading = atan2(poserr(2), poserr(1));
     %     u(6) = heading;
     % end
 
-    % ---- 1. 计算各通道误差 ----
     pos_err  = u(1:3)  - u(7:9);
     ang_err  = u(4:6)  - u(10:12);
     ang_err  = mod(ang_err + pi, 2*pi) - pi; % 角度归一化到 [-pi, pi]
     
-    % 组合成 6x1 的误差向量
     error_vec = [pos_err; ang_err];
 
-    % ---- 2. 基准 Q、R 对角线元素 ----
     Q_base_diag = [4 4 5 14 14 18];
     R_base_diag = [1 1 1 2 2 2] * 3.5/2;
     % R_base_diag(3:6) = R_base_diag(3:6) * 0.9;
-    % ---- 3. 独立模糊调整 (核心修改) ----
-    % 初始化缩放系数向量
+    
     alphaQ_vec = zeros(1, 6);
     alphaR_vec = zeros(1, 6);
 
@@ -173,18 +168,6 @@ function [alphaQ, alphaR] = fuzzyQR_gain(err_val)
     % 输入 err_val: 单个通道的绝对误差 (标量)，外面已对角度做了缩放
     e = max(err_val, 0);
 
-    %========================
-    % 1. 隶属度函数重新设计
-    %========================
-    % 这里取一个比较保守、平滑的划分：
-    % small :   0   ~ 0.4 左右
-    % mid   :   0.2 ~ 1.2
-    % large :   0.8 ~ 2.5+
-    %
-    % 你现在的调用里，位置就是米级，角度外面乘了 3 以后大概 0~几的量级，
-    % 这个范围可基本覆盖绝大多数情况，如果你实测误差明显更大/更小，
-    % 可以在下面微调阈值。
-
     % --- small，左肩型隶属：0~0.4 ---
     if e <= 0.2
         mu_small = 1;
@@ -223,16 +206,6 @@ function [alphaQ, alphaR] = fuzzyQR_gain(err_val)
     mu_mid   = mu_mid   / mu_sum;
     mu_large = mu_large / mu_sum;
 
-    %========================
-    % 2. 规则库：Q、R 的趋势（针对扰动/稳定性）
-    %========================
-    % 设计目标：
-    % - 小误差：重视稳态精度，但不过度减小 R，避免高频小抖
-    % - 中误差：适度加大 Q，同时稍微降低 R，加快收敛
-    % - 大误差：Q 不再继续猛增，只是略大一点；R 不要极小，否则会太冲
-    %
-    % 注意：这里是“运动学层”Q/R，最终作用是影响预测轨迹形状，
-    % 动力学那层你已经单独有一套更保守的模糊逻辑，两层叠加后整体不会太激进。
 
     % small 区（误差已经较小，主要压扰动、减小稳态偏差）
     alphaQ_small  = 1.2;   % 比 1 稍大一点，稳态段更紧
@@ -245,13 +218,6 @@ function [alphaQ, alphaR] = fuzzyQR_gain(err_val)
     % large 区（初始偏差大或外界强扰，既要追又不能太猛）
     alphaQ_large  = 1.5;   % 不再像原先那样继续拉得很高，只比 mid 稍高
     alphaR_large  = 0.85;  % 比 mid 再小一点，但远没到“非常小”的程度
-
-    % 如果你发现“误差大时轨迹太激进”，可以适当调大 alphaR_large，比如 0.85 -> 1.0
-    % 如果你觉得“收敛偏慢”，可以略微增大 alphaQ_mid / alphaQ_large
-
-    %========================
-    % 3. 解模糊
-    %========================
     alphaQ = mu_small * alphaQ_small + ...
              mu_mid   * alphaQ_mid   + ...
              mu_large * alphaQ_large;
